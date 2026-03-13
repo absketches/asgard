@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asgard — Traffic Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/asgard/style.css">
+</head>
+<body>
+<div class="scanline"></div>
+
+<header>
+    <div class="header-left">
+        <div class="logo-block">
+            <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                <path d="M2 17l10 5 10-5"/>
+                <path d="M2 12l10 5 10-5"/>
+            </svg>
+            <span class="logo-text">ASGARD</span>
+        </div>
+        <div class="header-sep"></div>
+        <span class="header-label">NETWORK TRAFFIC MONITOR</span>
+    </div>
+    <div class="header-right">
+        <div class="stat-pill" id="statPill">
+            <span class="stat-pill-dot" id="statusDot"></span>
+            <span class="stat-pill-label" id="statusLabel">CONNECTING</span>
+        </div>
+        <div class="clock" id="clock"></div>
+    </div>
+</header>
+
+<div class="tab-bar">
+    <div class="tab-group">
+        <button class="tab active" data-cls="ALL">
+            <span class="tab-label">ALL</span>
+            <span class="tab-count" id="count-ALL">0</span>
+        </button>
+        <button class="tab tab-normal" data-cls="NORMAL">
+            <span class="tab-dot"></span>
+            <span class="tab-label">NORMAL</span>
+            <span class="tab-count" id="count-NORMAL">0</span>
+        </button>
+        <button class="tab tab-tracking" data-cls="TRACKING">
+            <span class="tab-dot"></span>
+            <span class="tab-label">TRACKING</span>
+            <span class="tab-count" id="count-TRACKING">0</span>
+        </button>
+        <button class="tab tab-suspicious" data-cls="SUSPICIOUS">
+            <span class="tab-dot"></span>
+            <span class="tab-label">SUSPICIOUS</span>
+            <span class="tab-count" id="count-SUSPICIOUS">0</span>
+        </button>
+        <button class="tab tab-exfil" data-cls="EXFILTRATION_RISK">
+            <span class="tab-dot"></span>
+            <span class="tab-label">EXFIL RISK</span>
+            <span class="tab-count" id="count-EXFILTRATION_RISK">0</span>
+        </button>
+        <button class="tab tab-blocked" data-cls="USER_BLOCKS">
+            <span class="tab-label">⊘ BLOCKED</span>
+            <span class="tab-count" id="count-USER_BLOCKS">0</span>
+        </button>
+    </div>
+    <div class="tab-bar-right">
+        <button class="clear-btn" id="clearBtn" title="Clear records for current tab">⌫ CLEAR</button>
+    </div>
+</div>
+
+<main>
+    <div id="trafficView">
+        <table>
+            <thead>
+            <tr>
+                <th class="col-time">TIME</th>
+                <th class="col-ip">SOURCE</th>
+                <th class="col-dest">DESTINATION</th>
+                <th class="col-method">METHOD</th>
+                <th class="col-size">SIZE</th>
+                <th class="col-cls">STATUS</th>
+            </tr>
+            </thead>
+            <tbody id="tableBody">
+            <tr class="empty-row">
+                <td colspan="6">
+                    <div class="empty-state">
+                        <div class="empty-icon">◈</div>
+                        <div>Waiting for traffic…</div>
+                        <div class="empty-hint">Set your proxy to this host:8888</div>
+                    </div>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div id="blocksView" class="hidden">
+        <div class="blocks-header">
+            <div class="blocks-header-left">
+                <span class="blocks-title">USER-DEFINED BLOCKS</span>
+                <span class="blocks-hint">Click any row in the traffic view to block a host. Blocks apply to all subdomains.</span>
+            </div>
+        </div>
+        <table>
+            <thead>
+            <tr>
+                <th class="col-dest">HOST</th>
+                <th class="col-time">BLOCKED AT</th>
+                <th class="col-note">NOTE</th>
+                <th class="col-action"></th>
+            </tr>
+            </thead>
+            <tbody id="blocksBody">
+            <tr class="empty-row">
+                <td colspan="4">
+                    <div class="empty-state">
+                        <div class="empty-icon">◈</div>
+                        <div>No blocked domains</div>
+                    </div>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+    </div>
+</main>
+
+<div id="modal" class="modal hidden">
+    <div class="modal-box">
+        <div class="modal-header">
+            <span class="modal-tag">⊘ BLOCK HOST</span>
+        </div>
+        <div class="modal-host" id="modalHost"></div>
+        <p class="modal-desc">All future requests to <strong id="modalHostInline"></strong> and its subdomains will be classified as <span class="badge badge-TRACKING">TRACKING</span>.</p>
+        <div class="modal-field">
+            <label class="modal-label">NOTE (OPTIONAL)</label>
+            <input type="text" id="modalNote" class="modal-input" placeholder="e.g. ad tracker, spyware…">
+        </div>
+        <div class="modal-actions">
+            <button class="btn-cancel" id="modalCancel">Cancel</button>
+            <button class="btn-block" id="modalConfirm">⊘ Block</button>
+        </div>
+    </div>
+</div>
+
+<script src="/asgard/app.js"></script>
+</body>
+</html>

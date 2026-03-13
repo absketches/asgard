@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.github.absketches</groupId>
+    <artifactId>asgard</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>asgard</name>
+    <description>Lightweight traffic monitor and classifier. Runs on Raspberry Pi or any Linux server.</description>
+
+    <properties>
+        <nano.version>2025.12.3350640</nano.version>
+        <nano.devconsole.version>2025.12.3611243</nano.devconsole.version>
+        <java.version>21</java.version>
+        <project.encoding>UTF-8</project.encoding>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
+        <maven.compiler.release>${java.version}</maven.compiler.release>
+        <project.build.sourceEncoding>${project.encoding}</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>${project.encoding}</project.reporting.outputEncoding>
+        <maven-compiler-plugin.version>3.14.1</maven-compiler-plugin.version>
+        <maven-shade-plugin.version>3.5.2</maven-shade-plugin.version>
+        <maven-ant-plugin-version>3.2.0</maven-ant-plugin-version>
+        <graalvm-native.version>0.10.6</graalvm-native.version>
+        <sqlite.version>3.45.1.0</sqlite.version>
+        <!-- TEST -->
+        <junit.version>6.0.1</junit.version>
+        <assertj-core.version>3.27.7</assertj-core.version>
+        <junit-launcher.version>6.0.1</junit-launcher.version>
+    </properties>
+
+    <dependencies>
+        <!-- Nano framework -->
+        <dependency>
+            <groupId>org.nanonative</groupId>
+            <artifactId>nano</artifactId>
+            <version>${nano.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.nanonative</groupId>
+            <artifactId>devconsole</artifactId>
+            <version>${nano.devconsole.version}</version>
+        </dependency>
+
+        <!-- SQLite — zero config, Pi-friendly, single file DB -->
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>${sqlite.version}</version>
+        </dependency>
+
+        <!-- TEST -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <version>${junit-launcher.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj-core.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>${project.build.directory}/generated-resources</directory>
+                <filtering>false</filtering>
+            </resource>
+        </resources>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven-compiler-plugin.version}</version>
+            </plugin>
+
+            <!-- Generate asgard-files.txt so UiLoader knows which static files to load -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>${maven-ant-plugin-version}</version>
+                <executions>
+                    <execution>
+                        <id>generate-asgard-files-list</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <mkdir dir="${project.build.directory}/generated-resources/asgard"/>
+                                <path id="dashboard.path">
+                                    <fileset dir="${project.basedir}/src/main/resources/asgard">
+                                        <include name="*"/>
+                                    </fileset>
+                                </path>
+                                <pathconvert property="asgard.files.list" refid="dashboard.path" pathsep="${line.separator}">
+                                    <mapper type="flatten"/>
+                                </pathconvert>
+                                <echo file="${project.build.directory}/generated-resources/asgard/asgard-files.txt"
+                                      encoding="UTF-8">${asgard.files.list}
+                                </echo>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Run locally during development: mvn exec:java -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.2.0</version>
+                <configuration>
+                    <mainClass>io.github.absketches.asgard.Main</mainClass>
+                    <commandlineArgs>--enable-native-access=ALL-UNNAMED</commandlineArgs>
+                </configuration>
+            </plugin>
+
+            <!-- JUnit 5 test runner -->
+            <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.3.1</version>
+                <configuration>
+                    <useModulePath>false</useModulePath>
+                    <argLine>
+                        --enable-native-access=ALL-UNNAMED
+                        -Dorg.slf4j.simpleLogger.defaultLogLevel=off
+                    </argLine>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+            GraalVM native image for Linux aarch64 (Raspberry Pi Zero 2W)
+            Usage: mvn -Pnative-linux-aarch64 package
+            Requires: GraalVM JDK 21+ with native-image installed
+            Output: target/asgard (native binary, no JVM needed)
+        -->
+        <profile>
+            <id>native-linux-aarch64</id>
+            <activation>
+                <activeByDefault>false</activeByDefault>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>${graalvm-native.version}</version>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <imageName>asgard</imageName>
+                            <mainClass>io.github.absketches.asgard.Main</mainClass>
+                            <buildArgs>
+                                <!-- No JVM fallback — true native binary -->
+                                <buildArg>--no-fallback</buildArg>
+                                <!-- Unlock experimental options used below -->
+                                <buildArg>-H:+UnlockExperimentalVMOptions</buildArg>
+                                <!-- Initialise as much as possible at build time -->
+                                <buildArg>--initialize-at-build-time</buildArg>
+                                <!-- SQLite native lib — loaded at runtime via xerial -->
+                                <buildArg>--initialize-at-run-time=org.sqlite.core.NativeDB</buildArg>
+                                <!-- Allow SQLite native access in native image -->
+                                <buildArg>--enable-native-access=ALL-UNNAMED</buildArg>
+                                <!-- Include static UI files bundled in JAR -->
+                                <buildArg>-H:IncludeResources=asgard/.*</buildArg>
+                                <buildArg>-H:IncludeResources=asgard/asgard-files.txt</buildArg>
+                                <!-- Reduce binary size -->
+                                <buildArg>-O2</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Fat JAR for local JVM development only.
+            Usage: mvn -Pdev package
+                   java -jar target/asgard.jar
+        -->
+        <profile>
+            <id>dev</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-shade-plugin</artifactId>
+                        <version>${maven-shade-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <phase>package</phase>
+                                <goals><goal>shade</goal></goals>
+                                <configuration>
+                                    <finalName>asgard</finalName>
+                                    <transformers>
+                                        <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                            <mainClass>io.github.absketches.asgard.Main</mainClass>
+                                        </transformer>
+                                        <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                    </transformers>
+                                    <filters>
+                                        <filter>
+                                            <artifact>*:*</artifact>
+                                            <excludes>
+                                                <exclude>META-INF/*.SF</exclude>
+                                                <exclude>META-INF/*.DSA</exclude>
+                                                <exclude>META-INF/*.RSA</exclude>
+                                            </excludes>
+                                        </filter>
+                                    </filters>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

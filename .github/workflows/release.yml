@@ -1,0 +1,157 @@
+name: Release
+
+permissions: {}
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_timeout_minutes:
+        type: number
+        required: false
+        default: 15
+        description: "Test job timeout in minutes"
+      native_timeout_minutes:
+        type: number
+        required: false
+        default: 30
+        description: "Native image build timeout in minutes"
+
+concurrency:
+  group: asgard-release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: "🧪 Test (JVM)"
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(inputs.build_timeout_minutes) }}
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    steps:
+      - name: "🔍 Checkout [main]"
+        uses: actions/checkout@v4
+
+      - name: "🗃️ Cache Maven [${{ runner.os }}]"
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2-
+
+      - name: "☕ Set up Java 21"
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: "🧪 Run all tests"
+        run: mvn test -B
+
+      - name: "📋 Upload test results"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: target/surefire-reports/
+          retention-days: 7
+
+  native:
+    name: "🏗️ Native Image (linux/arm64)"
+    runs-on: ubuntu-24.04-arm
+    needs: test  # Only runs if test job succeeds — no escape hatch
+    timeout-minutes: ${{ fromJSON(inputs.native_timeout_minutes) }}
+    permissions:
+      contents: read
+    steps:
+      - name: "🔍 Checkout [main]"
+        uses: actions/checkout@v4
+
+      - name: "🗃️ Cache Maven [${{ runner.os }}]"
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2-
+
+      - name: "🖥️ Set up GraalVM 21 (ARM64)"
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm-community'
+          native-image-job-reports: true
+
+      - name: "📐 Compute release version"
+        id: version
+        run: |
+          DATE=$(date -u +"%Y.%m")
+          VERSION="${DATE}.${{ github.run_number }}${{ github.run_id }}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Release version: ${VERSION}"
+
+      - name: "🔢 Set version in pom.xml"
+        run: mvn versions:set -DnewVersion="${{ steps.version.outputs.version }}" -DgenerateBackupPoms=false -B -q
+
+      - name: "🏗️ Build native image"
+        run: mvn package -Pnative-linux-aarch64 -DskipTests -B
+
+      - name: "💨 Smoke test binary"
+        run: |
+          ./target/asgard &
+          ASGARD_PID=$!
+          sleep 3
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/asgard || echo "000")
+          kill $ASGARD_PID 2>/dev/null || true
+          echo "Dashboard HTTP status: $STATUS"
+          [ "$STATUS" = "200" ] || (echo "❌ Smoke test failed — expected 200, got $STATUS" && exit 1)
+          echo "✅ Smoke test passed"
+
+      - name: "📦 Upload binary"
+        uses: actions/upload-artifact@v4
+        with:
+          name: asgard-linux-aarch64-${{ github.run_id }}
+          path: target/asgard
+          retention-days: 90
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+  release:
+    name: "🎉 Create Release [${{ needs.native.outputs.version }}]"
+    needs: [native]  # Only runs if native succeeded, which only runs if test succeeded
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: "🔍 Checkout [main]"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 100
+
+      - name: "📥 Download binary"
+        uses: actions/download-artifact@v4
+        with:
+          name: asgard-linux-aarch64-${{ github.run_id }}
+          path: ./dist
+
+      - name: "🎉 Create GitHub Release"
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ needs.native.outputs.version }}
+          name: "Asgard ${{ needs.native.outputs.version }}"
+          generateReleaseNotes: true
+          artifacts: dist/asgard
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            ## Install on Raspberry Pi
+
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ needs.native.outputs.version }}/asgard \
+              -o /usr/local/bin/asgard && chmod +x /usr/local/bin/asgard
+
+            asgard
+            # Dashboard → http://<pi-ip>:8080/asgard
+            ```
+
+            **Built from:** `${{ github.sha }}`
