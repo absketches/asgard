@@ -1,42 +1,48 @@
 package io.github.absketches.asgard.service;
 
-import io.github.absketches.asgard.AsgardChannels;
+import io.github.absketches.asgard.dao.RequestDao;
 import io.github.absketches.asgard.model.RequestRecord;
 import io.github.absketches.asgard.model.UserBlock;
+import io.github.absketches.asgard.util.ClassifierHelper;
 import io.github.absketches.asgard.util.UiLoader;
 import berlin.yuna.typemap.model.LinkedTypeMap;
 import berlin.yuna.typemap.model.TypeList;
 import berlin.yuna.typemap.model.TypeMapI;
 import org.nanonative.nano.core.model.Service;
 import org.nanonative.nano.helper.event.model.Event;
+import org.nanonative.nano.services.http.HttpServer;
 import org.nanonative.nano.services.http.model.ContentType;
 import org.nanonative.nano.services.http.model.HttpObject;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
-
-import org.nanonative.nano.services.http.HttpServer;
 
 import static org.nanonative.devconsole.util.SystemUtil.computeBaseUrl;
 import static org.nanonative.nano.services.http.HttpServer.EVENT_HTTP_REQUEST;
 
 /**
  * DashboardService — serves the Asgard UI and REST API.
- *
+ * Also owns the two background schedulers:
+ *   - oisd.nl blocklist refresh every 24h  → ClassifierHelper.refreshOisdBlocklist()
+ *   - Beacon counter reset every 60s       → ClassifierHelper.resetBeaconCounter()
  * API:
- *   GET  /asgard                    → index.html
- *   GET  /asgard/api/init           → last 2000 rows, all classifications
- *   GET  /asgard/api/poll?since=ts  → new rows since timestamp
- *   GET  /asgard/api/blocks         → all user-defined blocks
- *   POST /asgard/api/block          → add block: body {"host":"evil.com","note":"optional"}
- *   DELETE /asgard/api/block?host=  → remove block
- *   GET  /asgard/{file}             → static asset
+ *   GET    /asgard                    → index.html
+ *   GET    /asgard/api/init           → last 2000 rows, all classifications
+ *   GET    /asgard/api/poll?since=ts  → new rows since timestamp
+ *   GET    /asgard/api/blocks         → all user-defined blocks
+ *   POST   /asgard/api/block          → add block: body {"host":"evil.com","note":"optional"}
+ *   DELETE /asgard/api/block?host=    → remove block
+ *   DELETE /asgard/api/requests?cls=  → clear requests (ALL or classification name)
+ *   GET    /asgard/{file}             → static asset
  */
 public class DashboardService extends Service {
 
-    private static final int    INIT_LIMIT = 2000;
-    private static final int    POLL_LIMIT = 500;
-    private static final String BASE       = "/asgard";
+    private static final int    INIT_LIMIT      = 2000;
+    private static final int    POLL_LIMIT      = 500;
+    private static final String BASE            = "/asgard";
+    private static final long   OISD_REFRESH_S  = 86_400L;
+    private static final long   BEACON_RESET_S  = 60L;
 
     private Consumer<Event<HttpObject, HttpObject>> httpListener;
 
@@ -46,19 +52,19 @@ public class DashboardService extends Service {
             context.warn(() -> "[Asgard] UI files failed to load: {}", e.getMessage());
         }
 
-        // Wait for StorageService before accepting requests — otherwise /api/init hits null connection
-        StorageService storage;
-        do {
-            storage = context.nano().service(StorageService.class);
-        } while (null == storage || !storage.isReady());
-
         httpListener = context.subscribeEvent(EVENT_HTTP_REQUEST, e -> true, this::handleHttp);
+
+        // Initial oisd.nl load + periodic refresh every 24h
+        context.run(ClassifierHelper::refreshOisdBlocklist, 0, OISD_REFRESH_S, TimeUnit.SECONDS);
+
+        // Reset beacon counter every 60s
+        context.run(ClassifierHelper::resetBeaconCounter, BEACON_RESET_S, BEACON_RESET_S, TimeUnit.SECONDS);
 
         HttpServer httpServer;
         do {
             httpServer = context.nano().service(HttpServer.class);
         } while (null == httpServer || !httpServer.isReady());
-        context.info(() -> "[Asgard] DashboardService started at {}{} ", computeBaseUrl(httpServer), BASE);
+        context.info(() -> "[Asgard] DashboardService started at {}{}", computeBaseUrl(httpServer), BASE);
     }
 
     @Override
@@ -98,8 +104,7 @@ public class DashboardService extends Service {
                 } else if (path.equals(BASE + "/api/requests") && "DELETE".equalsIgnoreCase(method)) {
                     handleClearRequests(event, req);
                 } else if ("GET".equalsIgnoreCase(method)) {
-                    final String file = path.substring(BASE.length() + 1);
-                    serveFile(event, req, file);
+                    serveFile(event, req, path.substring(BASE.length() + 1));
                 } else {
                     req.createResponse().statusCode(404).body("Not Found").respond(event);
                 }
@@ -107,7 +112,7 @@ public class DashboardService extends Service {
     }
 
     private void serveInit(final Event<HttpObject, HttpObject> event, final HttpObject req) {
-        serveJson(event, req, toRequestList(StorageService.getPage(0, INIT_LIMIT)).toJson());
+        serveJson(event, req, toRequestList(RequestDao.getPage(0, INIT_LIMIT)).toJson());
     }
 
     private void servePoll(final Event<HttpObject, HttpObject> event, final HttpObject req) {
@@ -116,24 +121,22 @@ public class DashboardService extends Service {
             req.createResponse().statusCode(400).body("Missing 'since' parameter").respond(event);
             return;
         }
-        serveJson(event, req, toRequestList(StorageService.getRequestsSince(since, POLL_LIMIT)).toJson());
+        serveJson(event, req, toRequestList(RequestDao.getRequestsSince(since, POLL_LIMIT)).toJson());
     }
 
     private void serveBlocks(final Event<HttpObject, HttpObject> event, final HttpObject req) {
-        serveJson(event, req, toBlockList(StorageService.getUserBlocks()).toJson());
+        serveJson(event, req, toBlockList(RequestDao.getUserBlocks()).toJson());
     }
 
     private void handleAddBlock(final Event<HttpObject, HttpObject> event, final HttpObject req) {
         try {
-            final var body = req.bodyAsMap();
+            final var    body = req.bodyAsMap();
             final String host = body.asString("host");
             if (host == null || host.isBlank()) {
                 req.createResponse().statusCode(400).body("{\"error\":\"host required\"}").respond(event);
                 return;
             }
-            final String note = body.asString("note");
-            // Fire event to StorageService — it will persist and fire USER_BLOCK_CONFIRMED
-            context.newEvent(AsgardChannels.USER_BLOCK_ADD, () -> new String[]{host, note}).async(true).send();
+            RequestDao.insertUserBlock(host, body.asString("note"));
             serveJson(event, req, new LinkedTypeMap().putR("status", "added").putR("host", host).toJson());
         } catch (final Exception e) {
             req.createResponse().statusCode(400).body("{\"error\":\"invalid body\"}").respond(event);
@@ -146,15 +149,14 @@ public class DashboardService extends Service {
             req.createResponse().statusCode(400).body("{\"error\":\"host required\"}").respond(event);
             return;
         }
-        context.newEvent(AsgardChannels.USER_BLOCK_REMOVE, () -> host).async(true).send();
+        RequestDao.deleteUserBlock(host);
         serveJson(event, req, new LinkedTypeMap().putR("status", "removed").putR("host", host).toJson());
     }
 
     private void handleClearRequests(final Event<HttpObject, HttpObject> event, final HttpObject req) {
-        // ?cls=ALL|NORMAL|TRACKING|SUSPICIOUS|EXFILTRATION_RISK
-        final String cls = req.queryParam("cls");
+        final String cls            = req.queryParam("cls");
         final String classification = (cls == null || cls.isBlank()) ? "ALL" : cls.toUpperCase().trim();
-        context.newEvent(AsgardChannels.CLEAR_REQUESTS, () -> classification).async(true).send();
+        RequestDao.clearRequests(classification);
         serveJson(event, req, new LinkedTypeMap().putR("status", "cleared").putR("classification", classification).toJson());
     }
 
@@ -181,8 +183,6 @@ public class DashboardService extends Service {
         return list;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-
     private void serveFile(final Event<HttpObject, HttpObject> event, final HttpObject req, final String fileName) {
         final byte[] content = UiLoader.STATIC_FILES.get(fileName);
         if (content == null) {
@@ -192,7 +192,7 @@ public class DashboardService extends Service {
         req.createResponse()
             .statusCode(200)
             .header("Content-Type", UiLoader.contentTypeFor(fileName))
-            .body(new String(content))
+            .body(content)   // byte[] directly — no String conversion
             .respond(event);
     }
 

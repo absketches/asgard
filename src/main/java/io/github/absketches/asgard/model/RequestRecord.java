@@ -4,8 +4,7 @@ import java.time.Instant;
 
 /**
  * Immutable record of a single proxied request.
- * Passed between Asgard services via events.
- * Persisted to SQLite by StorageService.
+ * Passed between Asgard services and persisted to SQLite by RequestDao.
  */
 public record RequestRecord(
     String id,
@@ -26,9 +25,5 @@ public record RequestRecord(
 
     public RequestRecord withClassification(final Classification c) {
         return new RequestRecord(id, timestamp, sourceIp, destination, method, dataSize, c, blocked);
-    }
-
-    public RequestRecord asBlocked() {
-        return new RequestRecord(id, timestamp, sourceIp, destination, method, dataSize, classification, true);
     }
 }

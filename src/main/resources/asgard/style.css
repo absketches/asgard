@@ -25,8 +25,8 @@
     --blue-dim:     rgba(88,166,255,.1);
 
     --accent:       #238636;
-    --font-mono:    'IBM Plex Mono', 'Cascadia Code', monospace;
-    --font-sans:    'IBM Plex Sans', system-ui, sans-serif;
+    --font-mono:    'Cascadia Code', 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+    --font-sans:    system-ui, -apple-system, sans-serif;
     --radius:       4px;
 }
 
