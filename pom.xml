@@ -189,6 +189,8 @@
                             <imageName>asgard</imageName>
                             <mainClass>io.github.absketches.asgard.Main</mainClass>
                             <buildArgs>
+                                <!-- Enable HTTPS for oisd.nl blocklist refresh -->
+                                <buildArg>--enable-url-protocols=https,http</buildArg>
                                 <!-- No JVM fallback — true native binary -->
                                 <buildArg>--no-fallback</buildArg>
                                 <!-- Unlock experimental options used below -->
