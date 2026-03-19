@@ -5,10 +5,10 @@ import java.time.Instant;
 /**
  * Immutable record of a user-defined block entry.
  * Persisted in the user_blocks SQLite table.
- * Passed between StorageService, ClassifierService and DashboardService.
+ * ClassifierHelper blocks all subdomains of the specified host.
  */
 public record UserBlock(
-        String host,       // exact host — ClassifierService also blocks all subdomains
-        Instant createdAt,
-        String note        // optional, nullable
+    String host,       // exact host — ClassifierHelper also blocks all subdomains
+    Instant createdAt,
+    String note        // optional, nullable
 ) {}

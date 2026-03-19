@@ -10,6 +10,7 @@ import berlin.yuna.typemap.model.TypeList;
 import berlin.yuna.typemap.model.TypeMapI;
 import org.nanonative.nano.core.model.Service;
 import org.nanonative.nano.helper.event.model.Event;
+import org.nanonative.nano.services.http.HttpClient;
 import org.nanonative.nano.services.http.HttpServer;
 import org.nanonative.nano.services.http.model.ContentType;
 import org.nanonative.nano.services.http.model.HttpObject;
@@ -54,16 +55,28 @@ public class DashboardService extends Service {
 
         httpListener = context.subscribeEvent(EVENT_HTTP_REQUEST, e -> true, this::handleHttp);
 
-        // Initial oisd.nl load + periodic refresh every 24h
-        context.run(ClassifierHelper::refreshOisdBlocklist, 0, OISD_REFRESH_S, TimeUnit.SECONDS);
+        HttpClient httpClient;
+        HttpServer httpServer;
+        do {
+            httpClient = context.nano().service(HttpClient.class);
+            httpServer = context.nano().service(HttpServer.class);
+        } while (null == httpClient || !httpClient.isReady() || null == httpServer || !httpServer.isReady());
+
+        // oisd.nl blocklist refresh — runs immediately then every 24h
+        final HttpClient nanoHttp = httpClient;
+        context.run(() -> {
+            try {
+                final int count = ClassifierHelper.refreshOisdBlocklist(nanoHttp);
+                if (count > 0) context.info(() -> "[Asgard] oisd.nl refreshed — {} domains", count);
+                else           context.warn(() -> "[Asgard] oisd.nl refresh failed — keeping existing list");
+            } catch (final RuntimeException e) {
+                context.warn(() -> "[Asgard] oisd.nl refresh failed — {}", e.getMessage());
+            }
+        }, 0, OISD_REFRESH_S, TimeUnit.SECONDS);
 
         // Reset beacon counter every 60s
         context.run(ClassifierHelper::resetBeaconCounter, BEACON_RESET_S, BEACON_RESET_S, TimeUnit.SECONDS);
 
-        HttpServer httpServer;
-        do {
-            httpServer = context.nano().service(HttpServer.class);
-        } while (null == httpServer || !httpServer.isReady());
         context.info(() -> "[Asgard] DashboardService started at {}{}", computeBaseUrl(httpServer), BASE);
     }
 
@@ -112,7 +125,12 @@ public class DashboardService extends Service {
     }
 
     private void serveInit(final Event<HttpObject, HttpObject> event, final HttpObject req) {
-        serveJson(event, req, toRequestList(RequestDao.getPage(0, INIT_LIMIT)).toJson());
+        try {
+            serveJson(event, req, toRequestList(RequestDao.getPage(0, INIT_LIMIT)).toJson());
+        } catch (final Exception e) {
+            context.warn(() -> "[Asgard] serveInit failed: {}", e.getMessage());
+            req.createResponse().statusCode(500).body("{\"error\":\"database error\"}").respond(event);
+        }
     }
 
     private void servePoll(final Event<HttpObject, HttpObject> event, final HttpObject req) {
@@ -121,11 +139,21 @@ public class DashboardService extends Service {
             req.createResponse().statusCode(400).body("Missing 'since' parameter").respond(event);
             return;
         }
-        serveJson(event, req, toRequestList(RequestDao.getRequestsSince(since, POLL_LIMIT)).toJson());
+        try {
+            serveJson(event, req, toRequestList(RequestDao.getRequestsSince(since, POLL_LIMIT)).toJson());
+        } catch (final Exception e) {
+            context.warn(() -> "[Asgard] servePoll failed: {}", e.getMessage());
+            req.createResponse().statusCode(500).body("{\"error\":\"database error\"}").respond(event);
+        }
     }
 
     private void serveBlocks(final Event<HttpObject, HttpObject> event, final HttpObject req) {
-        serveJson(event, req, toBlockList(RequestDao.getUserBlocks()).toJson());
+        try {
+            serveJson(event, req, toBlockList(RequestDao.getUserBlocks()).toJson());
+        } catch (final Exception e) {
+            context.warn(() -> "[Asgard] serveBlocks failed: {}", e.getMessage());
+            req.createResponse().statusCode(500).body("{\"error\":\"database error\"}").respond(event);
+        }
     }
 
     private void handleAddBlock(final Event<HttpObject, HttpObject> event, final HttpObject req) {
@@ -139,7 +167,8 @@ public class DashboardService extends Service {
             RequestDao.insertUserBlock(host, body.asString("note"));
             serveJson(event, req, new LinkedTypeMap().putR("status", "added").putR("host", host).toJson());
         } catch (final Exception e) {
-            req.createResponse().statusCode(400).body("{\"error\":\"invalid body\"}").respond(event);
+            context.warn(() -> "[Asgard] handleAddBlock failed: {}", e.getMessage());
+            req.createResponse().statusCode(500).body("{\"error\":\"database error\"}").respond(event);
         }
     }
 
@@ -149,15 +178,25 @@ public class DashboardService extends Service {
             req.createResponse().statusCode(400).body("{\"error\":\"host required\"}").respond(event);
             return;
         }
-        RequestDao.deleteUserBlock(host);
-        serveJson(event, req, new LinkedTypeMap().putR("status", "removed").putR("host", host).toJson());
+        try {
+            RequestDao.deleteUserBlock(host);
+            serveJson(event, req, new LinkedTypeMap().putR("status", "removed").putR("host", host).toJson());
+        } catch (final Exception e) {
+            context.warn(() -> "[Asgard] handleRemoveBlock failed: {}", e.getMessage());
+            req.createResponse().statusCode(500).body("{\"error\":\"database error\"}").respond(event);
+        }
     }
 
     private void handleClearRequests(final Event<HttpObject, HttpObject> event, final HttpObject req) {
         final String cls            = req.queryParam("cls");
         final String classification = (cls == null || cls.isBlank()) ? "ALL" : cls.toUpperCase().trim();
-        RequestDao.clearRequests(classification);
-        serveJson(event, req, new LinkedTypeMap().putR("status", "cleared").putR("classification", classification).toJson());
+        try {
+            RequestDao.clearRequests(classification);
+            serveJson(event, req, new LinkedTypeMap().putR("status", "cleared").putR("classification", classification).toJson());
+        } catch (final Exception e) {
+            context.warn(() -> "[Asgard] handleClearRequests failed: {}", e.getMessage());
+            req.createResponse().statusCode(500).body("{\"error\":\"database error\"}").respond(event);
+        }
     }
 
     private static TypeList toRequestList(final List<RequestRecord> records) {

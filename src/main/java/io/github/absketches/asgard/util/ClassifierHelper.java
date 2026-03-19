@@ -3,33 +3,22 @@ package io.github.absketches.asgard.util;
 import io.github.absketches.asgard.dao.RequestDao;
 import io.github.absketches.asgard.model.RequestRecord;
 import io.github.absketches.asgard.model.RequestRecord.Classification;
+import org.nanonative.nano.services.http.HttpClient;
+import org.nanonative.nano.services.http.model.HttpObject;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.sql.SQLException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * ClassifierHelper — pure static utility. No lifecycle, no events.
- *
- * Classifies every proxied request with one of four classifications and
- * persists it via StorageService.
- *
- * Two separate blocklists:
- *   OISD_BLOCKLIST  — oisd.nl, refreshed every 24h from DashboardService scheduler
- *   USER_BLOCKLIST  — updated directly by StorageService after DB writes
- *
- * Beacon counter resets every 60s — also driven by DashboardService scheduler.
- */
 public final class ClassifierHelper {
 
-    private static final String OISD_BASIC_URL       = "https://small.oisd.nl/domainswild2";
-    static final         long   BEACON_THRESHOLD      = 60L;
-    public static final         long   EXFIL_SIZE_BYTES      = 1_048_576L;
+    private static final String OISD_URL         = "https://small.oisd.nl/domainswild2";
+    static final         long   BEACON_THRESHOLD = 60L;
+    public static final  long   EXFIL_SIZE_BYTES = 1_048_576L;
 
     private static final Set<String> SAFE_DOMAINS = Set.of(
         "apple.com", "icloud.com", "apple-dns.net", "mzstatic.com",
@@ -53,86 +42,73 @@ public final class ClassifierHelper {
 
     private ClassifierHelper() {}
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Public API
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Classifies the record and persists it via StorageService in one call.
-     * Called directly by ProxyService after each connection.
-     */
-    public static void classifyAndPersist(final RequestRecord record) {
-        final Classification cls    = determine(record);
-        final RequestRecord  tagged = record.withClassification(cls);
+    /** Classifies the record and persists it via RequestDao. */
+    public static void classifyAndPersist(final RequestRecord record) throws SQLException {
+        final Classification cls   = determine(record);
+        final RequestRecord tagged = record.withClassification(cls);
         RequestDao.persist(tagged);
     }
 
-    /**
-     * Called by StorageService after a user block is added or removed.
-     * Swaps the USER_BLOCKLIST atomically.
-     */
+    /** Swaps the USER_BLOCKLIST atomically. */
     public static void updateUserBlocklist(final Set<String> updated) {
         USER_BLOCKLIST.set(updated);
     }
 
-    /** Resets the beacon counter — called every 60s from DashboardService scheduler. */
+    /** Resets the per-host beacon counter. */
     public static void resetBeaconCounter() {
         BEACON_COUNTER.set(new ConcurrentHashMap<>());
     }
 
-    /** Downloads and atomically swaps the oisd.nl blocklist. */
-    public static void refreshOisdBlocklist() {
+    /**
+     * Downloads and atomically swaps the oisd.nl blocklist using Nano's HttpClient.
+     * @return number of domains loaded, or -1 on failure
+     */
+    public static int refreshOisdBlocklist(final HttpClient http) {
         try {
-            final HttpURLConnection conn =
-                (HttpURLConnection) new URL(OISD_BASIC_URL).openConnection(java.net.Proxy.NO_PROXY);
-            conn.setConnectTimeout(15_000);
-            conn.setReadTimeout(60_000);
-            conn.setRequestProperty("User-Agent", "Asgard/1.0");
+            final HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(OISD_URL))
+                .header("User-Agent", "Mozilla/5.0 (compatible; Asgard/1.0)")
+                .header("Accept", "text/plain,*/*")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .GET()
+                .build();
+
+            final HttpObject response = http.send(request);
+            if (response.hasFailed()) return -1;
 
             final Set<String> fresh = ConcurrentHashMap.newKeySet();
-            try (final BufferedReader reader =
-                     new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    line = line.trim().toLowerCase();
-                    if (!line.isEmpty() && !line.startsWith("#")) {
-                        if (line.startsWith("*.")) line = line.substring(2);
-                        if (!line.isEmpty()) fresh.add(line);
-                    }
-                }
+            for (final String line : response.bodyAsString().split("\n")) {
+                String trimmed = line.trim().toLowerCase();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+                if (trimmed.startsWith("*.")) trimmed = trimmed.substring(2);
+                if (!trimmed.isEmpty()) fresh.add(trimmed);
             }
             OISD_BLOCKLIST.set(fresh);
+            return fresh.size();
         } catch (final Exception ignored) {
-            // Keep existing list on failure — logged by caller (DashboardService)
+            return -1;
         }
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Test helpers — package-private, not for production use
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public static void addOisdEntry(final String host)    { OISD_BLOCKLIST.get().add(host); }
-    public static void removeOisdEntry(final String host) { OISD_BLOCKLIST.get().remove(host); }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Classification logic — package-private for unit tests
-    // ─────────────────────────────────────────────────────────────────────────
 
     public static Classification determine(final RequestRecord record) {
         final String host = record.destination() == null ? "" : record.destination().toLowerCase();
 
-        if (isSafe(host))                                               return Classification.NORMAL;
+        if (isSafe(host))
+            return Classification.NORMAL;
 
         final boolean isUpload = "POST".equalsIgnoreCase(record.method())
             || "PUT".equalsIgnoreCase(record.method());
-        if (isUpload && record.dataSize() > EXFIL_SIZE_BYTES)          return Classification.EXFILTRATION_RISK;
+        if (isUpload && record.dataSize() > EXFIL_SIZE_BYTES)
+            return Classification.EXFILTRATION_RISK;
 
         final long count = BEACON_COUNTER.get()
             .computeIfAbsent(host, k -> new AtomicLong(0))
             .incrementAndGet();
-        if (count > BEACON_THRESHOLD && !isBlocked(host) && isUpload)  return Classification.EXFILTRATION_RISK;
+        if (count > BEACON_THRESHOLD && !isBlocked(host) && isUpload)
+            return Classification.EXFILTRATION_RISK;
 
-        if (isBlocked(host))                                            return Classification.TRACKING;
+        if (isBlocked(host))
+            return Classification.TRACKING;
 
         return Classification.SUSPICIOUS;
     }
@@ -169,4 +145,8 @@ public final class ClassifierHelper {
         }
         return false;
     }
+
+    // Test helpers
+    static void addOisdEntry(final String host)    { OISD_BLOCKLIST.get().add(host); }
+    static void removeOisdEntry(final String host) { OISD_BLOCKLIST.get().remove(host); }
 }

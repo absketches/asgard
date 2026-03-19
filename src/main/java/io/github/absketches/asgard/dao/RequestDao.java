@@ -12,15 +12,15 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * StorageService — pure static SQLite utility. No lifecycle, no events.
+ * RequestDao — pure static SQLite utility. No lifecycle, no events.
  * init() must be called once before Nano starts (in Main or @BeforeEach in tests).
  */
 public final class RequestDao {
 
     private static final int DEFAULT_MAX = 10_000;
 
-    static volatile Connection connection;
-    private static String dbPath  = "asgard.db";
+    static Connection connection;
+    private static String dbPath = "asgard.db";
 
     private RequestDao() {}
 
@@ -28,15 +28,15 @@ public final class RequestDao {
      * Opens (or creates) the SQLite database and creates tables if needed.
      * On corruption, deletes the file and retries once.
      * For tests, pass ":memory:".
+     * Not synchronized — called once before Nano starts, no concurrent access possible.
      */
     public static void init(final String path) {
         dbPath = path;
         tryInit();
-        // Seed ClassifierHelper with persisted user blocks
         ClassifierHelper.updateUserBlocklist(loadUserBlockHosts());
     }
 
-    public static List<RequestRecord> getPage(final int page, final int pageSize) {
+    public static synchronized List<RequestRecord> getPage(final int page, final int pageSize) throws SQLException {
         final List<RequestRecord> results = new ArrayList<>();
         if (connection == null) return results;
         try (final PreparedStatement stmt = connection.prepareStatement("""
@@ -47,11 +47,11 @@ public final class RequestDao {
             stmt.setInt(2, page * pageSize);
             final ResultSet rs = stmt.executeQuery();
             while (rs.next()) results.add(mapRow(rs));
-        } catch (final SQLException ignored) {}
+        }
         return results;
     }
 
-    public static List<RequestRecord> getRequestsSince(final String isoTimestamp, final int limit) {
+    public static synchronized List<RequestRecord> getRequestsSince(final String isoTimestamp, final int limit) throws SQLException {
         final List<RequestRecord> results = new ArrayList<>();
         if (connection == null) return results;
         try (final PreparedStatement stmt = connection.prepareStatement("""
@@ -62,11 +62,11 @@ public final class RequestDao {
             stmt.setInt(2, limit);
             final ResultSet rs = stmt.executeQuery();
             while (rs.next()) results.add(mapRow(rs));
-        } catch (final SQLException ignored) {}
+        }
         return results;
     }
 
-    public static List<UserBlock> getUserBlocks() {
+    public static synchronized List<UserBlock> getUserBlocks() throws SQLException {
         final List<UserBlock> results = new ArrayList<>();
         if (connection == null) return results;
         try (final PreparedStatement stmt = connection.prepareStatement(
@@ -79,11 +79,11 @@ public final class RequestDao {
                     rs.getString("note")
                 ));
             }
-        } catch (final SQLException ignored) {}
+        }
         return results;
     }
 
-    public static void persist(final RequestRecord record) {
+    public static synchronized void persist(final RequestRecord record) throws SQLException {
         if (record == null || connection == null) return;
         try (final PreparedStatement stmt = connection.prepareStatement("""
             INSERT OR IGNORE INTO requests
@@ -100,10 +100,10 @@ public final class RequestDao {
             stmt.setBoolean(8, record.blocked());
             stmt.executeUpdate();
             enforceCap();
-        } catch (final SQLException ignored) {}
+        }
     }
 
-    public static void insertUserBlock(final String host, final String note) {
+    public static synchronized void insertUserBlock(final String host, final String note) throws SQLException {
         if (connection == null) return;
         try (final PreparedStatement stmt = connection.prepareStatement(
             "INSERT OR IGNORE INTO user_blocks (host, created_at, note) VALUES (?, ?, ?)")) {
@@ -111,41 +111,49 @@ public final class RequestDao {
             stmt.setString(2, Instant.now().toString());
             stmt.setString(3, note);
             stmt.executeUpdate();
-        } catch (final SQLException ignored) {}
+        }
         ClassifierHelper.updateUserBlocklist(loadUserBlockHosts());
     }
 
-    public static void deleteUserBlock(final String host) {
+    public static synchronized void deleteUserBlock(final String host) throws SQLException {
         if (connection == null) return;
         try (final PreparedStatement stmt = connection.prepareStatement(
             "DELETE FROM user_blocks WHERE host = ?")) {
             stmt.setString(1, host.toLowerCase().trim());
             stmt.executeUpdate();
-        } catch (final SQLException ignored) {}
+        }
         ClassifierHelper.updateUserBlocklist(loadUserBlockHosts());
     }
 
-    public static void clearRequests(final String classification) {
+    public static synchronized void clearRequests(final String classification) throws SQLException {
         if (connection == null) return;
-        try (final Statement stmt = connection.createStatement()) {
-            if ("ALL".equalsIgnoreCase(classification)) {
+        if ("ALL".equalsIgnoreCase(classification)) {
+            try (final Statement stmt = connection.createStatement()) {
                 stmt.execute("DELETE FROM requests");
-            } else {
-                stmt.execute("DELETE FROM requests WHERE classification = '" + classification + "'");
             }
-        } catch (final SQLException ignored) {}
+        } else {
+            try (final PreparedStatement stmt = connection.prepareStatement(
+                "DELETE FROM requests WHERE classification = ?")) {
+                stmt.setString(1, classification);
+                stmt.executeUpdate();
+            }
+        }
     }
 
-    static Set<String> loadUserBlockHosts() {
+    static synchronized Set<String> loadUserBlockHosts() {
         final Set<String> hosts = ConcurrentHashMap.newKeySet();
         if (connection == null) return hosts;
         try (final PreparedStatement stmt = connection.prepareStatement(
             "SELECT host FROM user_blocks")) {
             final ResultSet rs = stmt.executeQuery();
             while (rs.next()) hosts.add(rs.getString("host"));
-        } catch (final SQLException ignored) {}
+        } catch (final SQLException e) {
+            throw new RuntimeException("[Asgard] loadUserBlockHosts failed: " + e.getMessage(), e);
+        }
         return hosts;
     }
+
+    // ── Internals ─────────────────────────────────────────────────────────────
 
     private static void enforceCap() throws SQLException {
         try (final PreparedStatement stmt = connection.prepareStatement("""

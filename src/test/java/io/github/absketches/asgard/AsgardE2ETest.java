@@ -21,6 +21,7 @@ import java.net.URLEncoder;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -298,7 +299,7 @@ class AsgardE2ETest {
 
     /** Polls RequestDao until a record matching hostFragment appears, or throws. */
     private static RequestRecord awaitRecord(final String hostFragment, final long timeoutMs)
-        throws InterruptedException {
+        throws InterruptedException, SQLException {
         final long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             final var match = RequestDao.getPage(0, 200).stream()

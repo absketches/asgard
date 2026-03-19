@@ -143,7 +143,7 @@ jobs:
                   git config user.email "github-actions[bot]@users.noreply.github.com"
                   mvn versions:set -DnewVersion="${{ needs.native.outputs.version }}" -DgenerateBackupPoms=false -B -q
                   git add pom.xml
-                  git commit -m "chore: release ${{ needs.native.outputs.version }} [skip ci]"
+                  git commit -m "chore: release ${{ needs.native.outputs.version }}"
                   git push
 
             - name: "📥 Download binary"

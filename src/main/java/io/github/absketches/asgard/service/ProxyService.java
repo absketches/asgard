@@ -19,14 +19,6 @@ import static org.nanonative.nano.helper.config.ConfigRegister.registerConfig;
  * ProxyService — raw TCP proxy using ServerSocket + virtual threads.
  * Runs independently of Nano's HttpServer (which is dashboard-only on port 8080).
  * Listens on port 8888. User points their device proxy settings here.
- * Two connection types:
- *
- *   Plain HTTP  — proxy reads the full request, forwards to upstream server,
- *                 relays response back. Full visibility: method, path, headers, body size.
- *
- *   HTTPS CONNECT — browser sends CONNECT host:443, proxy opens TCP to upstream,
- *                   responds "200 Connection Established", then becomes a dumb pipe.
- *                   Two virtual threads copy bytes in both directions.
  */
 public class ProxyService extends Service {
 
@@ -252,7 +244,7 @@ public class ProxyService extends Service {
     // Classify + persist
     // ─────────────────────────────────────────────────────────────────────────
 
-    private static void record(
+    private void record(
         final String destination,
         final String method,
         final String sourceIp,
@@ -268,7 +260,11 @@ public class ProxyService extends Service {
             Classification.NORMAL,  // placeholder — ClassifierHelper will override
             false
         );
-        ClassifierHelper.classifyAndPersist(raw);
+        try {
+            ClassifierHelper.classifyAndPersist(raw);
+        } catch (final Exception e) {
+            context.warn(() -> "[Asgard] Failed to classify/persist {}: {}", destination, e.getMessage());
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
